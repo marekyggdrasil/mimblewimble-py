@@ -11,6 +11,8 @@ from hashlib import blake2b, pbkdf2_hmac, sha512
 from bip32 import BIP32
 from bip_utils import Bech32Encoder
 
+from datetime import datetime
+
 from mimblewimble.mnemonic import Mnemonic
 
 
@@ -106,6 +108,87 @@ class Wallet:
         slatepack_address = Bech32Encoder.Encode(network, pk)
 
         return slatepack_address
+
+
+    def deriveED25519Seed(self, path='m/0/1/0'):
+        if self.master_seed is None:
+            raise Exception('The wallet is shielded')
+
+        # I AM VOLDEMORT
+        m = hmac.new('IamVoldemort'.encode('utf8'), digestmod=sha512)
+        m.update(self.master_seed)
+        secret = m.digest()
+
+        # derive the seed at the path
+        bip32 = BIP32(chaincode=secret[32:], privkey=secret[:32])
+        sk_der = bip32.get_privkey_from_path(path)
+
+        # compute the blake2 hash of that key and that is ed25519 seed
+        seed_blake = blake2b(sk_der, digest_size=32).digest()
+
+        return seed_blake
+
+
+    def getAuthSlateKeyPair(self, username, url, path='m/0/1/0'):
+        # get the seed at the path
+        seed_blake = self.deriveED25519Seed(path=path)
+
+        # derive the signing key
+        m = hmac.new((username + url).encode('utf8'), digestmod=sha512)
+        m.update(seed_blake)
+        auth_seed_blake = m.digest()
+
+        # get the ed25519 secret key and public key from it
+        pk, sk = bindings.crypto_sign_seed_keypair(seed_blake)
+        return pk, sk
+
+
+    def authSlateRegister(self, username, url, path='m/0/1/0'):
+        # get the auth slate key pair
+        pk, sk = self.getAuthSlateKeyPair(username, url, path=path)
+
+        # prepare the message
+        message = 'I wish to be register to {0} as {1}'.format(url, username).encode('utf8')
+
+        # prepare the signature
+        raw_signed = bindings.crypto_sign(message, sk)
+
+        # auth slate object
+        auth_slate = {
+            'authentication': 'registration',
+            'data': {
+                'url': url,
+                'username': username,
+                'signature': raw_signed.hex()
+            }
+        }
+        return auth_slate
+
+    def authSlateLogin(self, username, url, timestamp=None, path='m/0/1/0'):
+        # get the auth slate key pair
+        pk, sk = self.getAuthSlateKeyPair(username, url, path=path)
+
+        # get current timestamp
+        if timestamp is None:
+            timestamp = int(datetime.now().timestamp())
+
+        # prepare the message
+        message = 'On {0} I wish to login to {1} as {2}'.format(str(timestamp), url, username).encode('utf8')
+
+        # prepare the signature
+        raw_signed = bindings.crypto_sign(message, sk)
+
+        # auth slate object
+        auth_slate = {
+            'authentication': 'login',
+            'data': {
+                'timestamp': timestamp,
+                'url': url,
+                'username': username,
+                'signature': raw_signed.hex()
+            }
+        }
+        return auth_slate
 
 
     @classmethod
